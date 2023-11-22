@@ -1,5 +1,5 @@
-OUTPUT_DIR=${1:-"./alma-7b-parallel-ft-lora"}
-pairs=${2:-"de-en,cs-en,is-en,zh-en,ru-en,en-de,en-cs,en-is,en-zh,en-ru"}
+OUTPUT_DIR=${1:-"./alma-7b-parallel-ft-lora-canto"}
+pairs=${2:-"zh-yue,yue-zh"}
 LORA_RANK=${3:-"16"}
 export HF_DATASETS_CACHE=".cache/huggingface_cache/datasets"
 export TRANSFORMERS_CACHE=".cache/models/"
@@ -9,8 +9,9 @@ port=$(( RANDOM % (50000 - 30000 + 1 ) + 30000 ))
 
 accelerate launch --main_process_port ${port} --config_file configs/deepspeed_train_config.yaml \
      run_llmmt.py \
-    --model_name_or_path haoranxu/ALMA-7B-Pretrain \
-    --mmt_data_path  ./human_written_data/ \
+    --model_name_or_path indiejoseph/cantonese-llama-2-7b-oasst-v1 \
+    --mmt_data_path  ../data/ \
+    --suffix cleaned_parallel \
     --use_peft \
     --lora_rank ${LORA_RANK} \
     --do_train \
@@ -37,7 +38,7 @@ accelerate launch --main_process_port ${port} --config_file configs/deepspeed_tr
     --logging_strategy steps \
     --logging_steps 0.05 \
     --output_dir ${OUTPUT_DIR} \
-    --num_train_epochs 1 \
+    --num_train_epochs 2 \
     --predict_with_generate \
     --prediction_loss_only \
     --max_new_tokens 256 \
@@ -50,4 +51,4 @@ accelerate launch --main_process_port ${port} --config_file configs/deepspeed_tr
     --overwrite_cache
     
 ## Evaluation (BLEU, COMET)
-bash ./evals/eval_generation.sh ${OUTPUT_DIR} ${pairs}
+# bash ./evals/eval_generation.sh ${OUTPUT_DIR} ${pairs}

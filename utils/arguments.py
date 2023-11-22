@@ -288,7 +288,7 @@ class DataTrainingArguments:
     # predict_source_lang: str = field(default="", metadata={"help": "The source language for testing"})
     # predict_target_lang: str = field(default="en", metadata={"help": "The target language for testing"})
 
-    suffix: Optional[str] = field(default="", metadata={"help": "The suffix of the training file."})
+    suffix: Optional[str] = field(default="", metadata={"help": "The middle part of the validation and test file."})
 
     def __post_init__(self):
         if self.streaming:

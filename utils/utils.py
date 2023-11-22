@@ -77,6 +77,7 @@ LANG_TABLE = {
     "uk": "Ukrainian",
     "ha": "Hausa",
     "ro": "Romanian",
+    "yue": "Cantonese",
 }
 
 ## Prefix and suffix for prompt in target language (only from English to target language if the target is non-English)
@@ -85,11 +86,12 @@ PREFIX = {
     "fr": "Traduisez ceci de l'anglais vers le français :\nAnglais: ",
     "cs": "Přeložte toto z angličtiny do češtiny:\nanglicky: ",
     "is": "Þýddu þetta úr ensku yfir á íslensku:\nEnska: ",
-    "zh": "将其从英文翻译成中文：\n英语：",
+    "zh": "將下文從廣東話翻譯成中文普通話\n廣東話：",
     "ja": "これを英語から日本語に翻訳してください:\n英語：",
     "ru": "Переведите это с английского на русский:\nАнглийский: ",
     "uk": "Перекладіть це з англійської на українську:\nАнглійська: ",
     "ha": "Fassara wannan daga Turanci zuwa Hausa:\nTuranci: ",
+    "zh": "將下文從中文普通話翻譯成廣東話\n普通話：",
 }
 
 SUFFIX = {
@@ -98,11 +100,12 @@ SUFFIX = {
     "fr": "\nFrançais :",
     "cs": "\nčesky:",
     "is": "\nÍslenska:",
-    "zh": "\n中文：",
+    "zh": "\n普通話：",
     "ja": "\n日本語：",
     "ru": "\nРусский:",
     "uk": "\nУкраїнська:",
     "ha": "\nHausa:",
+    "yue": "\n廣東話：",
 }
 
 
@@ -115,44 +118,49 @@ def load_mmt_dataset(pairs, data_args, model_args, training_args, logger):
         tgt_lang = pair.split("-")[1]
 
         # The directory is always "xxen", e.g., deen
-        first_lang = src_lang if src_lang != "en" else tgt_lang
-        second_lang = "en"
-        pair_dir = first_lang + second_lang
+        # first_lang = src_lang if src_lang != "en" else tgt_lang
+        # second_lang = "en"
+        # pair_dir = first_lang + second_lang
             
-        h_suffix = f"-{data_args.suffix}" if data_args.suffix else ""
-        train_file = os.path.join(data_args.mmt_data_path, pair_dir, f"train.{first_lang}-{second_lang}{h_suffix}.json")
-        valid_file = os.path.join(data_args.mmt_data_path, pair_dir, f"valid.{first_lang}-{second_lang}.json")
-        test_file = os.path.join(data_args.mmt_data_path, pair_dir, f"test.{src_lang}-{tgt_lang}.json")
+        h_suffix = data_args.suffix if data_args.suffix else ""
+        train_file = os.path.join(data_args.mmt_data_path, f"train_cleaned_parallel_sentences.txt")
+        valid_file = os.path.join(data_args.mmt_data_path, f"valid_{h_suffix}_sentences.txt")
+        test_file = os.path.join(data_args.mmt_data_path, f"test_{h_suffix}_sentences.txt")
+        col_names = ["source", "yue", "zh"] if h_suffix == "cleaned_parallel" else ["yue", "zh"]
         
         if not os.path.isfile(train_file):
             logger.info(f"Warning: training file {train_file} does not exist!")
         elif train_file not in seen_files and training_args.do_train:
-            train_raw_data[f"{first_lang}-{second_lang}"] = load_dataset(
-                "json",
+            train_raw_data[f"{src_lang}-{tgt_lang}"] = load_dataset(
+                "csv",
                 data_files={"train": train_file},
                 cache_dir=model_args.cache_dir,
                 use_auth_token=True if model_args.use_auth_token else None,
                 streaming=data_args.streaming,
+                names=col_names
                 )
+
         if not os.path.isfile(valid_file):
             logger.info(f"Warning: validation file {valid_file} does not exist!")
         elif valid_file not in seen_files and training_args.do_eval:
-            valid_raw_data[f"{first_lang}-{second_lang}"] = load_dataset(
-                "json",
+            valid_raw_data[f"{src_lang}-{tgt_lang}"] = load_dataset(
+                "csv",
                 data_files={"validation": valid_file},
                 cache_dir=model_args.cache_dir,
                 use_auth_token=True if model_args.use_auth_token else None,
+                names=col_names
                 )
         if not os.path.isfile(test_file):
             logger.info(f"Warning: test file {test_file} does not exist!")
         elif test_file not in seen_files and training_args.do_predict:
             test_raw_data[f"{src_lang}-{tgt_lang}"] = load_dataset(
-                "json",
+                "csv",
                 data_files={"test": test_file},
                 cache_dir=model_args.cache_dir,
                 use_auth_token=True if model_args.use_auth_token else None,
+                names=col_names
                 )
-            test_raw_data[f"{src_lang}-{tgt_lang}"] = test_raw_data[f"{src_lang}-{tgt_lang}"].rename_column("translation", f"{src_lang}-{tgt_lang}")
+            # test_raw_data[f"{src_lang}-{tgt_lang}"] = test_raw_data[f"{src_lang}-{tgt_lang}"].rename_column("translation", f"{src_lang}-{tgt_lang}")
 
         seen_files.add(train_file)
         seen_files.add(valid_file)
@@ -420,6 +428,8 @@ def load_tokenizer(data_args, model_args, training_args, logger):
         )
 
     if "llama" in model_args.model_name_or_path:
+        tokenizer.pad_token = "[PAD]"
+        tokenizer.padding_side = "left"
         tokenizer.pad_token_id = 0
         tokenizer.bos_token_id = 1
         tokenizer.eos_token_id = 2
@@ -434,19 +444,21 @@ def load_tokenizer(data_args, model_args, training_args, logger):
     return tokenizer
 
 def get_preprocessed_data(train_raw_data, valid_raw_data, test_raw_data, pairs, tokenizer, shots_eval_dict, data_args, training_args, model_args):
-    def tokenize_function_train_eval_left_pad(examples):
+    def tokenize_function_train_eval_left_pad(examples, pair):
         inputs = []
         prompts = []
-        for ex in examples["translation"]:
-            source_lang, target_lang = list(ex.keys())
+        n_examples = len(examples["yue"])
+        for i in range(n_examples):
+            ex = {k: v[i] for k, v in examples.items()}
+            source_lang, target_lang = pair.split("-")
             if f"{source_lang}-{target_lang}" in pairs:
                 prompt = get_prompt(source_lang, target_lang, ex)
                 prompts.append(prompt)
                 inputs.append(prompt + ex[target_lang])
-            if f"{target_lang}-{source_lang}" in pairs:
-                prompt = get_prompt(target_lang, source_lang, ex)
-                prompts.append(prompt)
-                inputs.append(prompt + ex[source_lang])
+            # if f"{target_lang}-{source_lang}" in pairs:
+            #     prompt = get_prompt(target_lang, source_lang, ex)
+            #     prompts.append(prompt)
+            #     inputs.append(prompt + ex[source_lang])
         model_inputs = tokenizer(inputs, max_length=data_args.max_source_length + data_args.max_new_tokens - 1, padding=padding, truncation=True, add_special_tokens=True)
         check_add_eos(model_inputs, tokenizer)
         labels = copy.deepcopy(model_inputs)
@@ -502,76 +514,77 @@ def get_preprocessed_data(train_raw_data, valid_raw_data, test_raw_data, pairs, 
         model_inputs["labels"] = labels["input_ids"]
         return model_inputs
 
-    def tokenize_function_train_mono(examples):
-        if data_args.use_prefix_lm:
-            inputs = {"input_ids": [], "attention_mask": [], "prefix_mask": []}      
-        else:
-            inputs = {"input_ids": [], "attention_mask": []}
-        block_size = data_args.max_source_length + data_args.max_new_tokens
-        for ex in examples["translation"]:
-            lang1, lang2 = list(ex.keys())
-            lang = lang1 if lang1 != "en" else lang2
+    # def tokenize_function_train_mono(examples):
+    #     if data_args.use_prefix_lm:
+    #         inputs = {"input_ids": [], "attention_mask": [], "prefix_mask": []}      
+    #     else:
+    #         inputs = {"input_ids": [], "attention_mask": []}
+    #     block_size = data_args.max_source_length + data_args.max_new_tokens
+    #     for ex in examples["translation"]:
+    #         lang1, lang2 = list(ex.keys())
+    #         lang = lang1 if lang1 != "en" else lang2
 
-            for lang in [lang1, lang2]:
-                if ex[lang] == "":
-                    continue
-                _input = tokenizer(ex[lang], max_length=4096, add_special_tokens=True)
-                _input['input_ids'].append(tokenizer.eos_token_id)
-                _input['attention_mask'].append(1)
-                if data_args.use_prefix_lm:
-                    _input['prefix_mask'] = [0] * len(_input['attention_mask'])
-                    inputs["prefix_mask"].append(_input['prefix_mask'])
-                inputs["input_ids"].append(_input['input_ids'])
-                inputs['attention_mask'].append(_input['attention_mask'])
+    #         for lang in [lang1, lang2]:
+    #             if ex[lang] == "":
+    #                 continue
+    #             _input = tokenizer(ex[lang], max_length=4096, add_special_tokens=True)
+    #             _input['input_ids'].append(tokenizer.eos_token_id)
+    #             _input['attention_mask'].append(1)
+    #             if data_args.use_prefix_lm:
+    #                 _input['prefix_mask'] = [0] * len(_input['attention_mask'])
+    #                 inputs["prefix_mask"].append(_input['prefix_mask'])
+    #             inputs["input_ids"].append(_input['input_ids'])
+    #             inputs['attention_mask'].append(_input['attention_mask'])
             
         
-        concatenated_inputs = {k: list(chain(*inputs[k])) for k in inputs.keys()}
-        total_length = len(concatenated_inputs[list(inputs.keys())[0]])
-        total_length = (total_length // block_size) * block_size
+    #     concatenated_inputs = {k: list(chain(*inputs[k])) for k in inputs.keys()}
+    #     total_length = len(concatenated_inputs[list(inputs.keys())[0]])
+    #     total_length = (total_length // block_size) * block_size
 
-        model_inputs = {
-            k: [t[i : i + block_size] for i in range(0, total_length, block_size)]
-            for k, t in concatenated_inputs.items()
-        }
+    #     model_inputs = {
+    #         k: [t[i : i + block_size] for i in range(0, total_length, block_size)]
+    #         for k, t in concatenated_inputs.items()
+    #     }
 
-        model_inputs["labels"] = copy.deepcopy(model_inputs["input_ids"])
-        return model_inputs
+    #     model_inputs["labels"] = copy.deepcopy(model_inputs["input_ids"])
+    #     return model_inputs
 
-    def tokenize_function_train_oscar_mono(examples):
-        if data_args.use_prefix_lm:
-            inputs = {"input_ids": [], "attention_mask": [], "prefix_mask": []}      
-        else:
-            inputs = {"input_ids": [], "attention_mask": []}
-        block_size = data_args.max_source_length + data_args.max_new_tokens
-        for ex in examples["text"]:
-            _input = tokenizer(ex, max_length=4096, add_special_tokens=True)
-            _input['input_ids'].append(tokenizer.eos_token_id)
-            _input['attention_mask'].append(1)
-            if data_args.use_prefix_lm:
-                _input['prefix_mask'] = [0] * len(_input['attention_mask'])
-                inputs["prefix_mask"].append(_input['prefix_mask'])
-            inputs["input_ids"].append(_input['input_ids'])
-            inputs['attention_mask'].append(_input['attention_mask'])
+    # def tokenize_function_train_oscar_mono(examples):
+    #     if data_args.use_prefix_lm:
+    #         inputs = {"input_ids": [], "attention_mask": [], "prefix_mask": []}      
+    #     else:
+    #         inputs = {"input_ids": [], "attention_mask": []}
+    #     block_size = data_args.max_source_length + data_args.max_new_tokens
+    #     for ex in examples["text"]:
+    #         _input = tokenizer(ex, max_length=4096, add_special_tokens=True)
+    #         _input['input_ids'].append(tokenizer.eos_token_id)
+    #         _input['attention_mask'].append(1)
+    #         if data_args.use_prefix_lm:
+    #             _input['prefix_mask'] = [0] * len(_input['attention_mask'])
+    #             inputs["prefix_mask"].append(_input['prefix_mask'])
+    #         inputs["input_ids"].append(_input['input_ids'])
+    #         inputs['attention_mask'].append(_input['attention_mask'])
             
         
-        concatenated_inputs = {k: list(chain(*inputs[k])) for k in inputs.keys()}
-        total_length = len(concatenated_inputs[list(inputs.keys())[0]])
-        total_length = (total_length // block_size) * block_size
+    #     concatenated_inputs = {k: list(chain(*inputs[k])) for k in inputs.keys()}
+    #     total_length = len(concatenated_inputs[list(inputs.keys())[0]])
+    #     total_length = (total_length // block_size) * block_size
 
-        model_inputs = {
-            k: [t[i : i + block_size] for i in range(0, total_length, block_size)]
-            for k, t in concatenated_inputs.items()
-        }
+    #     model_inputs = {
+    #         k: [t[i : i + block_size] for i in range(0, total_length, block_size)]
+    #         for k, t in concatenated_inputs.items()
+    #     }
 
-        model_inputs["labels"] = copy.deepcopy(model_inputs["input_ids"])
-        return model_inputs
+    #     model_inputs["labels"] = copy.deepcopy(model_inputs["input_ids"])
+    #     return model_inputs
 
-    def tokenize_function_test(examples):
+    def tokenize_function_test(examples, pair):
         prompts = []
         targets = []
-        feature_name = list(examples.keys())[0]
-        source_lang, target_lang = feature_name.split("-")
-        for ex in examples[feature_name]:
+        n_examples = len(examples["yue"])
+        source_lang, target_lang = pair.split("-")
+        for i in range(n_examples):
+            ex = {k: v[i] for k, v in examples.items()}
             if f"{source_lang}-{target_lang}" in pairs:
                 prompt = get_prompt(source_lang, target_lang, ex, shots_eval_dict, data_args.use_target_lang_prompt_eval)
                 prompts.append(prompt)
@@ -590,10 +603,14 @@ def get_preprocessed_data(train_raw_data, valid_raw_data, test_raw_data, pairs, 
 
     
     # Preprocessing the datasets.
-    if data_args.mmt_data_path or data_args.mono_data_path:
-        column_names_mmt = ["translation"]
-    if data_args.oscar_data_path:
-        column_name_oscar = ["id", "meta", "text"]
+    # if data_args.mmt_data_path or data_args.mono_data_path:
+    #     column_names_mmt = ["translation"]
+    # if data_args.oscar_data_path:
+    #     column_name_oscar = ["id", "meta", "text"]
+    if data_args.suffix == "cleaned_parallel":
+        column_names_mmt = ["source", "yue", "zh"]
+    else:
+        column_names_mmt = ["yue", "zh"]
 
     # since this will be pickled to avoid _LazyModule error in Hasher force logger loading before tokenize_function
     tok_logger = transformers.utils.logging.get_logger("transformers.tokenization_utils_base")
@@ -605,15 +622,17 @@ def get_preprocessed_data(train_raw_data, valid_raw_data, test_raw_data, pairs, 
     if training_args.do_train:
         processed_datasets = []
         if data_args.mmt_data_path:
-            for lg_pair, sub_raw_data in train_raw_data.items():
-                train_dataset = sub_raw_data["train"]
-                if data_args.max_train_samples is not None:
-                    max_train_samples = min(len(train_dataset), data_args.max_train_samples)
-                    train_dataset = train_dataset.select(range(max_train_samples))
+            lg_pair, sub_raw_data = list(train_raw_data.items())[0]
+            train_dataset = sub_raw_data["train"]
+            # if data_args.max_train_samples is not None:
+            #     max_train_samples = min(len(train_dataset), data_args.max_train_samples)
+            #     train_dataset = train_dataset.select(range(max_train_samples))
+            for p in ["yue-zh", "zh-yue"]:
                 with training_args.main_process_first(desc="train dataset map pre-processing"):
+                    map_ds_fn_by_pair = lambda x: mmt_train_eval_tok_func(x, p)
                     if not data_args.streaming:
-                        train_dataset = train_dataset.map(
-                            mmt_train_eval_tok_func,
+                        processed_train_dataset = train_dataset.map(
+                            map_ds_fn_by_pair,
                             batched=True,
                             num_proc=data_args.preprocessing_num_workers,
                             remove_columns=column_names_mmt,
@@ -621,59 +640,60 @@ def get_preprocessed_data(train_raw_data, valid_raw_data, test_raw_data, pairs, 
                             load_from_cache_file=not data_args.overwrite_cache,
                             desc="Running tokenizer on MMT train dataset",
                         )
-                    else:
-                        train_dataset = train_dataset.map(
-                            mmt_train_eval_tok_func,
-                            batched=True,
-                            remove_columns=column_names_mmt,
-                        )    
-                processed_datasets.append(train_dataset)
+                    # else:
+                    #     train_dataset = train_dataset.map(
+                    #         mmt_train_eval_tok_func,
+                    #         batched=True,
+                    #     )    
+                processed_datasets.append(processed_train_dataset)
 
-        if data_args.mono_data_path:
-            train_dataset = train_raw_data['train']
-            if data_args.max_train_samples is not None:
-                max_train_samples = min(len(train_dataset), data_args.max_train_samples)
-                train_dataset = train_dataset.select(range(max_train_samples))
-            with training_args.main_process_first(desc="train dataset map pre-processing"):
-                if not data_args.streaming:
-                    train_dataset = train_dataset.map(
-                        tokenize_function_train_mono,
-                        batched=True,
-                        num_proc=data_args.preprocessing_num_workers,
-                        remove_columns=column_names_mmt,
-                        cache_file_name=f"{os.environ['HF_DATASETS_CACHE']}/{model_args.model_name_or_path.split('/')[-1]}-{data_args.mono_data_path.split('/')[-1]}",
-                        load_from_cache_file=not data_args.overwrite_cache,
-                        desc="Running tokenizer on monolingual train dataset",
-                    )
-                else:
-                    train_dataset = train_dataset.map(
-                        tokenize_function_train_mono,
-                        batched=True,
-                        remove_columns=column_names_mmt,
-                    )
-            processed_datasets.append(train_dataset)
-        if data_args.oscar_data_path:
-            train_dataset = train_raw_data
-            with training_args.main_process_first(desc="train dataset map pre-processing"):
-                train_dataset = train_dataset.map(
-                    tokenize_function_train_oscar_mono,
-                    batched=True,
-                    remove_columns=column_name_oscar,
-                )
-            processed_datasets.append(train_dataset)
+        # if data_args.mono_data_path:
+        #     train_dataset = train_raw_data['train']
+        #     if data_args.max_train_samples is not None:
+        #         max_train_samples = min(len(train_dataset), data_args.max_train_samples)
+        #         train_dataset = train_dataset.select(range(max_train_samples))
+        #     with training_args.main_process_first(desc="train dataset map pre-processing"):
+        #         if not data_args.streaming:
+        #             train_dataset = train_dataset.map(
+        #                 tokenize_function_train_mono,
+        #                 batched=True,
+        #                 num_proc=data_args.preprocessing_num_workers,
+        #                 remove_columns=column_names_mmt,
+        #                 cache_file_name=f"{os.environ['HF_DATASETS_CACHE']}/{model_args.model_name_or_path.split('/')[-1]}-{data_args.mono_data_path.split('/')[-1]}",
+        #                 load_from_cache_file=not data_args.overwrite_cache,
+        #                 desc="Running tokenizer on monolingual train dataset",
+        #             )
+        #         else:
+        #             train_dataset = train_dataset.map(
+        #                 tokenize_function_train_mono,
+        #                 batched=True,
+        #                 remove_columns=column_names_mmt,
+        #             )
+        #     processed_datasets.append(train_dataset)
+        # if data_args.oscar_data_path:
+        #     train_dataset = train_raw_data
+        #     with training_args.main_process_first(desc="train dataset map pre-processing"):
+        #         train_dataset = train_dataset.map(
+        #             tokenize_function_train_oscar_mono,
+        #             batched=True,
+        #             remove_columns=column_name_oscar,
+        #         )
+        #     processed_datasets.append(train_dataset)
         train_datasets = concatenate_datasets(processed_datasets)
         train_datasets = train_datasets.shuffle(seed=training_args.seed)
         
     if training_args.do_eval:
         processed_datasets = []
-        for lg_pair, sub_raw_data in valid_raw_data.items():
-            eval_dataset = sub_raw_data["validation"]
-            if data_args.max_eval_samples is not None:
-                max_eval_samples = min(len(eval_dataset), data_args.max_eval_samples)
-                eval_dataset = eval_dataset.select(range(max_eval_samples))
+        lg_pair, sub_raw_data = list(valid_raw_data.items())[0]
+        eval_dataset = sub_raw_data["validation"]
+        # if data_args.max_eval_samples is not None:
+        #     max_eval_samples = min(len(eval_dataset), data_args.max_eval_samples)
+        #     eval_dataset = eval_dataset.select(range(max_eval_samples))
+        for p in ["yue-zh", "zh-yue"]:
             with training_args.main_process_first(desc="validation dataset map pre-processing"):
-                eval_dataset = eval_dataset.map(
-                    mmt_train_eval_tok_func,
+                map_ds_fn_by_pair = lambda x: mmt_train_eval_tok_func(x, p)
+                processed_eval_dataset = eval_dataset.map(
+                    map_ds_fn_by_pair,
                     batched=True,
                     num_proc=data_args.preprocessing_num_workers,
                     remove_columns=column_names_mmt,
@@ -681,26 +701,29 @@ def get_preprocessed_data(train_raw_data, valid_raw_data, test_raw_data, pairs, 
                     load_from_cache_file=not data_args.overwrite_cache,
                     desc="Running tokenizer valid dataset",
                 )
-            processed_datasets.append(eval_dataset)
+            processed_datasets.append(processed_eval_dataset)
         eval_datasets = concatenate_datasets(processed_datasets)
         eval_datasets = eval_datasets.shuffle(seed=training_args.seed)
 
     if training_args.do_predict:
         test_datasets = {}
-        for lg_pair, sub_raw_data in test_raw_data.items():
-            test_dataset = sub_raw_data["test"]
-            if data_args.max_test_samples is not None:
-                max_test_samples = min(len(test_dataset), data_args.max_test_samples)
-                test_dataset = test_dataset.select(range(max_test_samples))
+        lg_pair, sub_raw_data = list(test_raw_data.items())[0]
+        test_dataset = sub_raw_data["test"]
+            # if data_args.max_test_samples is not None:
+            #     max_test_samples = min(len(test_dataset), data_args.max_test_samples)
+            #     test_dataset = test_dataset.select(range(max_test_samples))
+        for p in ["yue-zh", "zh-yue"]:
             with training_args.main_process_first(desc="test dataset map pre-processing"):
-                test_dataset = test_dataset.map(
-                    tokenize_function_test,
+                tokenize_function_by_pair_test = lambda x: tokenize_function_test(x, p)
+                processed_test_dataset = test_dataset.map(
+                    tokenize_function_by_pair_test,
                     batched=True,
                     num_proc=data_args.preprocessing_num_workers,
-                    remove_columns=[lg_pair],
+                    # remove_columns=column_names_mmt,
                     cache_file_name=f"{os.environ['HF_DATASETS_CACHE']}/{model_args.model_name_or_path.split('/')[-1]}-test-mmt-{lg_pair}-{data_args.language_pairs}-{data_args.suffix}",
                     load_from_cache_file=not data_args.overwrite_cache,
                     desc="Running tokenizer test dataset",
                 )
-            test_datasets[lg_pair] = test_dataset
+            test_datasets[p] = processed_test_dataset
+    
     return train_datasets, eval_datasets, test_datasets
