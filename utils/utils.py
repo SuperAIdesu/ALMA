@@ -125,7 +125,7 @@ def load_mmt_dataset(pairs, data_args, model_args, training_args, logger):
         h_suffix = data_args.suffix if data_args.suffix else ""
         train_file = os.path.join(data_args.mmt_data_path, f"train_cleaned_parallel_sentences.txt")
         valid_file = os.path.join(data_args.mmt_data_path, f"valid_{h_suffix}_sentences.txt")
-        test_file = os.path.join(data_args.mmt_data_path, f"test_{h_suffix}_sentences.txt")
+        test_file = os.path.join(data_args.mmt_data_path, f"valid_{h_suffix}_sentences.txt")
         col_names = ["source", "yue", "zh"] if h_suffix == "cleaned_parallel" else ["yue", "zh"]
         
         if not os.path.isfile(train_file):

@@ -180,43 +180,6 @@ def main():
     if training_args.do_predict:
         trainer.args.prediction_loss_only = False
 
-        logger.info("*** Validation predict ***")
-
-        lg_pairs = sorted(eval_datasets.keys()) # make sure each device print in the same order
-        for lg_pair in lg_pairs:
-            eval_dataset = eval_datasets[lg_pair]
-            src_lang, tgt_lang = lg_pair.split("-")
-            logger.info(f"*** Prediction for {lg_pair}***")
-            preds, _, _ = trainer.predict(
-                test_dataset=eval_dataset, 
-                max_new_tokens=data_args.max_new_tokens, 
-                num_beams=data_args.num_beams, 
-                metric_key_prefix="validation",
-                use_cache=True,
-            )
-
-            # Replace -100s used for padding as we can't decode them
-            if int(torch.cuda.current_device()) == 0:
-                preds = np.where(preds != -100, preds, tokenizer.pad_token_id)
-                decoded_preds = tokenizer.batch_decode(preds, skip_special_tokens=True)
-
-                # Some simple post-processing
-                decoded_preds = [pred.strip() for pred in decoded_preds]
-
-                for idx in range(data_args.display_num_translations):
-                    print("------------------------")
-                    print(decoded_preds[idx])
-
-                with open(os.path.join(training_args.output_dir, f"valid-{src_lang}-{tgt_lang}{data_args.suffix_eval_file}"), "w", encoding="utf-8") as f:
-                    suffix = get_key_suffix(tgt_lang, data_args)
-                    if len(shots_eval_dict) != 0:
-                        split_idx = len(shots_eval_dict[lg_pair]) + 1
-                    else:
-                        split_idx = 1
-                    for pred in decoded_preds:
-                        pred = clean_outputstring(pred, suffix, logger, split_idx)
-                        f.writelines([pred, "\n"])
-
         logger.info("*** Test predict ***")
         lg_pairs = sorted(test_datasets.keys()) # make sure each device print in the same order
         for lg_pair in lg_pairs:

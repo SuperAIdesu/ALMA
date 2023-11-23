@@ -1,2 +1,6 @@
 .cache
 */__pycache__/*
+
+# model output
+alma-7b*
+outputs*
