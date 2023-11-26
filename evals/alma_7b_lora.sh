@@ -1,5 +1,5 @@
 OUTPUT_DIR=${1:-"./outputs-alma-7b-lora-canto/"}
-pairs=${2:-"zh-yue,yue-zh"}
+TEST_PAIRS=${2:-"yue-zh,zh-yue"}
 export HF_DATASETS_CACHE=".cache/huggingface_cache/datasets"
 export TRANSFORMERS_CACHE=".cache/models/"
 # random port between 30000 and 50000
@@ -9,13 +9,14 @@ accelerate launch --main_process_port ${port} --config_file configs/deepspeed_ev
     run_llmmt.py \
     --model_name_or_path indiejoseph/cantonese-llama-2-7b-oasst-v1 \
     --do_predict \
+    --suffix cleaned_parallel \
     --low_cpu_mem_usage \
     --language_pairs ${TEST_PAIRS} \
     --mmt_data_path ../data/ \
-    --per_device_eval_batch_size 2 \
+    --per_device_eval_batch_size 1 \
     --output_dir ${OUTPUT_DIR} \
     --use_peft \
-    --peft_model_id  tjx10011/cantonese-alma-2-7b-oasst-v1-lora \
+    --peft_model_id ./alma-7b-parallel-ft-lora-canto \
     --predict_with_generate \
     --max_new_tokens 256 \
     --max_source_length 256 \
